@@ -1,4 +1,4 @@
-# DRG XP Calculator
+<img src="drg-xp-calculator.ico" width="48" height="48" align="left" alt="DRG XP Calculator icon"> DRG XP Calculator
 
 DRG XP Calculator is a small Windows desktop app for planning Deep Rock Galactic class leveling.
 
