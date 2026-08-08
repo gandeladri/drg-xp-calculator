@@ -1,0 +1,127 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Add MinGW to PATH
+        shell: pwsh
+        run: echo "C:\mingw64\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Build
+        shell: pwsh
+        run: .\build.ps1
+
+      - name: Compute SHA256
+        shell: pwsh
+        run: |
+          $hash = Get-FileHash -Algorithm SHA256 .\drg-xp-calculator.exe
+          "$($hash.Hash.ToLower())  drg-xp-calculator.exe" | Out-File -FilePath drg-xp-calculator.exe.sha256 -Encoding ascii
+          Get-Content drg-xp-calculator.exe.sha256
+
+      - name: Upload unsigned build artifact
+        uses: actions/upload-artifact@v5
+        with:
+          name: drg-xp-calculator-unsigned
+          path: |
+            drg-xp-calculator.exe
+            drg-xp-calculator.exe.sha256
+
+      # --- SignPath code signing ---
+      # Enabled once the SignPath Foundation application is approved and these repo secrets exist:
+      #   SIGNPATH_API_TOKEN         - API token from the SignPath dashboard
+      #   SIGNPATH_ORGANIZATION_ID   - SignPath organization ID
+      # Also set these as repo variables (Settings > Secrets and variables > Actions > Variables)
+      # once the SignPath project is created:
+      #   SIGNPATH_PROJECT_SLUG
+      #   SIGNPATH_SIGNING_POLICY_SLUG   (e.g. release-signing)
+      #   SIGNPATH_ARTIFACT_CONFIGURATION_SLUG
+      #
+      # - name: Submit for signing
+      #   if: github.ref == 'refs/heads/main'
+      #   uses: signpath/github-action-submit-signing-request@v1
+      #   with:
+      #     api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+      #     organization-id: ${{ secrets.SIGNPATH_ORGANIZATION_ID }}
+      #     project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+      #     signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
+      #     artifact-configuration-slug: ${{ vars.SIGNPATH_ARTIFACT_CONFIGURATION_SLUG }}
+      #     github-artifact-id: ${{ steps.upload.outputs.artifact-id }}
+      #     wait-for-completion: true
+      #     output-artifact-directory: signed
+
+      # --- Auto-release on every push to main that touches the shipped binary ---
+      # Bumps the patch version from the latest vX.Y.Z tag, tags the commit, and publishes a
+      # GitHub Release with the built exe + hash attached. Once SignPath signing is enabled above,
+      # swap the "path" below to the signed artifact directory.
+      #
+      # A release only happens when the diff touches code that changes the exe (*.c, *.rc, *.ico,
+      # build.ps1) — docs, CI-only, or .gitignore-only pushes build and upload the artifact but
+      # don't cut a release. Override with a commit-message marker when needed:
+      #   [skip release]   force-skip even if code changed
+      #   [force release]  force a release even if nothing code-relevant changed
+      - name: Determine if this push needs a release
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        id: shouldrelease
+        shell: pwsh
+        env:
+          HEAD_COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
+        run: |
+          $msg = $env:HEAD_COMMIT_MESSAGE
+          $decision = "false"
+          if ($msg -match '\[skip release\]') {
+            $decision = "false"
+          } elseif ($msg -match '\[force release\]') {
+            $decision = "true"
+          } else {
+            $changed = git diff --name-only HEAD~1 HEAD
+            if ($changed -match '\.(c|rc|ico)$' -or $changed -match '(^|/)build\.ps1$') {
+              $decision = "true"
+            }
+          }
+          echo "release=$decision" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+      - name: Compute next version
+        if: steps.shouldrelease.outputs.release == 'true'
+        id: nextver
+        shell: pwsh
+        run: |
+          git fetch --tags --force
+          $tags = git tag --list 'v*' | Where-Object { $_ -match '^v\d+\.\d+\.\d+$' } | Sort-Object { [version]($_ -replace '^v','') }
+          $latest = if ($tags) { $tags[-1] } else { 'v0.0.0' }
+          $parts = ($latest -replace '^v','').Split('.')
+          $next = "v$($parts[0]).$($parts[1]).$([int]$parts[2] + 1)"
+          echo "version=$next" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+      - name: Tag release
+        if: steps.shouldrelease.outputs.release == 'true'
+        shell: pwsh
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag ${{ steps.nextver.outputs.version }}
+          git push origin ${{ steps.nextver.outputs.version }}
+
+      - name: Publish release
+        if: steps.shouldrelease.outputs.release == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.nextver.outputs.version }}
+          generate_release_notes: true
+          files: |
+            drg-xp-calculator.exe
+            drg-xp-calculator.exe.sha256
