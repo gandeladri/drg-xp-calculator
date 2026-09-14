@@ -9,6 +9,14 @@ It supports two main workflows:
 
 ## Quick Start
 
+Install via winget:
+
+```
+winget install gandeladri.DRGXPCalculator
+```
+
+Or download manually:
+
 1. Download the executable from the [latest release](https://github.com/gandeladri/drg-xp-calculator/releases/latest).
 2. Launch the app.
 3. If your DRG save is in the default Steam location, the app will try to find and load it automatically.
